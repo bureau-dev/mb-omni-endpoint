@@ -7,12 +7,20 @@ const app = express();
 
 // Дозволяємо CORS (щоб fetch з сайту не падав)
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+
+  // дозволь тільки твій сайт
+  if (origin === "https://mockupbureau.com") {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(204).end();
   next();
 });
+
 
 // Приймаємо beacon як text
 app.use(express.text({ type: "*/*", limit: "1mb" }));
