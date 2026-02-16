@@ -3,11 +3,10 @@ import fetch from "node-fetch";
 
 const app = express();
 
-/* ========= CORS (щоб не було конфліктів з credentials) ========= */
+/* ========= CORS ========= */
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  // Дозволяємо тільки твій домен (інакше '*' + credentials може ламати preflight)
   if (origin === "https://mockupbureau.com") {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
@@ -19,7 +18,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Beacon часто шле як text/plain або application/json — приймаємо все як текст
 app.use(express.text({ type: "*/*", limit: "1mb" }));
 
 /* ========= ENV ========= */
@@ -27,9 +25,7 @@ const BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const CHAT_ID = process.env.TG_CHAT_ID;
 const SECRET = process.env.MB_TRACK_SECRET;
 
-/* ========= ROUTES ========= */
-app.get("/", (req, res) => res.send("ok"));
-
+/* ========= HELPERS ========= */
 function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
@@ -37,60 +33,84 @@ function safeJsonParse(str) {
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.trim()) {
-    // x-forwarded-for може бути "ip1, ip2, ip3"
     return xff.split(",")[0].trim();
   }
-  // fallback
   return req.socket?.remoteAddress || "";
 }
+
+function countryCodeToFlag(code) {
+  if (!code || code.length !== 2) return "";
+  return code
+    .toUpperCase()
+    .split("")
+    .map(c => String.fromCodePoint(127397 + c.charCodeAt()))
+    .join("");
+}
+
+async function getCountryInfo(ip) {
+  try {
+    const response = await fetch(`https://ipapi.co/${ip}/json/`);
+    if (!response.ok) return { name: "Unknown", code: "" };
+
+    const data = await response.json();
+    return {
+      name: data.country_name || "Unknown",
+      code: data.country_code || ""
+    };
+  } catch {
+    return { name: "Unknown", code: "" };
+  }
+}
+
+/* ========= ROUTES ========= */
+app.get("/", (req, res) => res.send("ok"));
 
 app.post("/mb-track", async (req, res) => {
   try {
     const raw = req.body || "";
     const data = safeJsonParse(raw) || {};
 
-    // Логи (можеш прибрати, коли все стабільно)
-    console.log("Incoming event:", data?.event);
-    // console.log("DATA:", data);
-
-    // IP + UA
-    const ip = getClientIp(req);
-    const userAgent = req.headers["user-agent"] || "";
-
-    // Перевірка секрету
     if (SECRET && data.secret !== SECRET) {
-      console.log("Wrong secret");
       return res.status(204).end();
     }
 
-    // Фільтр: тільки завантаження
     if (data.event !== "mb_download_click") {
       return res.status(204).end();
     }
 
     if (!BOT_TOKEN || !CHAT_ID) {
-      console.log("Missing TG_BOT_TOKEN or TG_CHAT_ID");
       return res.status(204).end();
     }
 
-    // Підхоплюємо поля (на випадок різних ключів)
-    const templateName = data.template_name || data.templateName || "";
-    const templateId = data.template_id || data.templateId || "";
-    const pagePath = data.page_path || data.pagePath || "";
-    const email = data.email || data.user_email || data.userEmail || "";
-    const ts = new Date(data.ts || Date.now()).toISOString();
+    const ip = getClientIp(req);
+    const { name: countryName, code: countryCode } = await getCountryInfo(ip);
+    const flag = countryCodeToFlag(countryCode);
+
+    const templateName = data.template_name || "";
+    const templateId = data.template_id || "";
+    const pagePath = data.page_path || "";
+    const email = data.email || "";
+
+    const dateObj = new Date(data.ts || Date.now());
+
+    const date = dateObj.toLocaleDateString("en-GB"); // 16/02/2026
+    const time = dateObj.toLocaleTimeString("en-GB"); // 18:53:25
 
     const message =
 `⬇️ Mockup Download
+
 🧾 Template: ${templateName}
 📂 ID: ${templateId}
 📍 Page: ${pagePath}
 📧 Email: ${email}
-🌍 IP: ${ip}
-🖥 UA: ${userAgent}
-🕒 ${ts}`;
 
-    const tg = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+🌍 Country: ${flag} ${countryName}
+🌐 IP: ${ip}
+
+📅 Date: ${date}
+⏰ Time: ${time}`;
+
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -100,12 +120,9 @@ app.post("/mb-track", async (req, res) => {
       }),
     });
 
-    const tgText = await tg.text();
-    console.log("Telegram response:", tg.status, tgText);
-
     return res.status(204).end();
   } catch (e) {
-    console.log("Server error:", e);
+    console.log("Error:", e);
     return res.status(204).end();
   }
 });
@@ -114,5 +131,6 @@ app.post("/mb-track", async (req, res) => {
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running on port", process.env.PORT || 3000);
 });
+
 
 
