@@ -30,14 +30,6 @@ function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
 
-function getClientIp(req) {
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.trim()) {
-    return xff.split(",")[0].trim();
-  }
-  return req.socket?.remoteAddress || "";
-}
-
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return "";
   return code
@@ -47,18 +39,35 @@ function countryCodeToFlag(code) {
     .join("");
 }
 
-async function getCountryInfo(ip) {
-  try {
-    const response = await fetch(`https://ipapi.co/${ip}/json/`);
-    if (!response.ok) return { name: "Unknown", code: "" };
+/**
+ * Get country WITHOUT collecting IP:
+ * - Cloudflare: cf-ipcountry (best, if your domain is proxied via Cloudflare)
+ * - Other possible proxies: x-vercel-ip-country, x-country-code
+ */
+function getCountryCodeFromHeaders(req) {
+  const pick = (v) => (typeof v === "string" ? v.trim().toUpperCase() : "");
 
-    const data = await response.json();
-    return {
-      name: data.country_name || "Unknown",
-      code: data.country_code || ""
-    };
+  const cf = pick(req.headers["cf-ipcountry"]);
+  if (cf && cf !== "XX") return cf;
+
+  const vercel = pick(req.headers["x-vercel-ip-country"]);
+  if (vercel) return vercel;
+
+  const generic = pick(req.headers["x-country-code"]);
+  if (generic) return generic;
+
+  return "";
+}
+
+function countryNameFromCode(code) {
+  if (!code || code.length !== 2) return "Unknown";
+  try {
+    // Node supports Intl.DisplayNames in modern runtimes.
+    const dn = new Intl.DisplayNames(["en"], { type: "region" });
+    return dn.of(code.toUpperCase()) || "Unknown";
   } catch {
-    return { name: "Unknown", code: "" };
+    // Fallback: show code if Intl not available
+    return code.toUpperCase();
   }
 }
 
@@ -82,8 +91,9 @@ app.post("/mb-track", async (req, res) => {
       return res.status(204).end();
     }
 
-    const ip = getClientIp(req);
-    const { name: countryName, code: countryCode } = await getCountryInfo(ip);
+    // ✅ Country WITHOUT IP
+    const countryCode = getCountryCodeFromHeaders(req);
+    const countryName = countryNameFromCode(countryCode);
     const flag = countryCodeToFlag(countryCode);
 
     const templateName = data.template_name || "";
@@ -92,7 +102,6 @@ app.post("/mb-track", async (req, res) => {
     const email = data.email || "";
 
     const dateObj = new Date(data.ts || Date.now());
-
     const date = dateObj.toLocaleDateString("en-GB"); // 16/02/2026
     const time = dateObj.toLocaleTimeString("en-GB"); // 18:53:25
 
@@ -105,7 +114,6 @@ app.post("/mb-track", async (req, res) => {
 📧 Email: ${email}
 
 🌍 Country: ${flag} ${countryName}
-🌐 IP: ${ip}
 
 📅 Date: ${date}
 ⏰ Time: ${time}`;
